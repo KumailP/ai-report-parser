@@ -1,83 +1,150 @@
-from openai import AsyncOpenAI
 import json
 import os
-from typing import Dict, Any
+from typing import Any, Dict, List
 from fastapi import HTTPException
-from openai import AsyncOpenAI, AsyncAzureOpenAI
+from openai import AsyncOpenAI
+from app.logging import logger
 
-endpoint = os.getenv("ENDPOINT_URL")
-deployment = os.getenv("DEPLOYMENT_NAME")
-subscription_key = os.getenv("AZURE_OPENAI_API_KEY")
-
-model="gpt-4o"
 client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-client_azure = AsyncAzureOpenAI(
-    azure_endpoint=endpoint,
-    api_key=subscription_key,
-    api_version="2024-05-01-preview",
-)
+model = "gpt-4o"
 
-async def extract_adaptive_financial_data(raw_data: Dict[str, Any]) -> Dict[str, Any]:
-    prompt = """
-    I have a financial spreadsheet containing various financial positions. Please analyze the data and classify each position as part of a balance sheet, income statement, or other financial statement.
-
-    Processing Instructions:
-    1. Convert all position names to snake_case (lowercase, spaces replaced with underscores, special characters removed).
-    2. Identify whether the data has a flat or hierarchical structure.
-    3. If hierarchical, ignore the nested values.
-    5. Return null for missing values.
-
-    Expected Output (JSON format):
-    {
-      "position_name": {
-        "current": <value or null>,
-        "previous": <value or null>,
-      }
-    }
-    - Flat structures: Directly list positions.
-    - Set missing values to null instead of calculating when at the root level.
-
-    Example Input:
-    Revenue: $1,000,000
-    Expenses: $800,000
-    Assets:
-      - Non Current Assets: $1,000,000
-        - Intangible Assets: $400,000
-          - Industrial Property: $200,000
-          - Other Intangible Assets: $200,000
-
-    Example Output:
-    {
-      "revenue": { "current": 1000000, "previous": null },
-      "expenses": { "current": 800000, "previous": null },
-      "assets": {
-        "current": null,
-        "previous": null,
-      }
-    }
-    Only extract financial positions, ignore headers and notes and any value that is not a standard financial position (e.g. assets, liabilities, expenses, income, payables, receivables, etc.).
-    Please note that the labels may use different wordings, so we need to intelligently identify which to classify as a financial position.
-    Important: The data may contain additional information that is not relevant to financial positions. Please focus only on the financial positions.
-    Important: The data in the spreadsheet may be not correctly formatted, or positioned in a way that is not standard. Please adapt to these variations.
+async def extract_raw_financial_data(sheet_data: List[List[Any]]) -> Dict[str, Any]:
+    extraction_prompt = """
+    You are a financial data analyst examining spreadsheet data converted to rows. Extract all financial positions with their current and previous values.
+    RULES:
+    Identify financial positions by looking for accounting terms (assets, liabilities, revenue, etc.)
+    For each position, extract:
+    The exact position name as it appears (preserve capitalization and format)
+    Current period value (if available)
+    Previous period value (if available)
+    In case there is data for multiple years, "Current" year is whatever the latest year in the spreadsheet, with the "Previous" year being the one before it.
+    Handle hierarchical structures by identifying parent positions
+    Set missing or empty values to null (don't represent as 0 or empty string)
+    Ignore non-financial data (headers, notes, dates)
+    Preserve the exact labels from the spreadsheet for matching against standardized terms later
+    Analyze the data row by row. Values may be formatted with currency symbols, commas, or parentheses (for negative values).
+    Note that the values are not in a standardized format, i.e. we could have a header "Assets" and the value for that could be later in the file next to something like "Total Assets"
+    OUTPUT FORMAT:
+    Return a JSON object where keys are the exact position names from the spreadsheet and values are objects with "current" and "previous" fields.
     """
-    
-    data_str = json.dumps(raw_data, indent=2)
-    
-    full_prompt = prompt + "\n" + data_str
-    
+    data_str = json.dumps(sheet_data, indent=2)
     response = await client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "developer", "content": "You are a financial data analyst specialized in extracting structured financial information from spreadsheets with a deep understanding of both flat and hierarchical financial statements."},
-            {"role": "user", "content": full_prompt}
+            {
+                "role": "system",
+                "content": "You are a financial data extraction specialist with exceptional pattern recognition. Extract raw financial data exactly as it appears."
+            },
+            {
+                "role": "user",
+                "content": extraction_prompt + "\n\nSpreadsheet data:\n" + data_str
+            }
         ],
-        response_format={"type": "json_object"}
+        response_format={"type": "json_object"},
+        temperature=0.1
     )
-    
     try:
-        result_text = response.choices[0].message.content
-        result_json = json.loads(result_text)
+        result = json.loads(response.choices[0].message.content)
+        return result
+    except json.JSONDecodeError:
+        logger.error("Failed to decode JSON response from OpenAI during extraction step")
+        raise HTTPException(status_code=500, detail="Failed to extract financial data")
+
+async def standardize_financial_data(raw_data: Dict[str, Any]) -> Dict[str, Any]:
+    standardization_prompt = """
+    Standardize the raw financial data into the required format with prefixed position names.
+    STANDARDIZATION RULES:
+    Map financial positions to standard column names with appropriate prefixes (a_, l_, e_)
+    Convert all values to numbers (float/int) or null
+    Empty or missing values must be represented as null, not 0 or empty string
+    Ensure negative values are properly represented (not in parentheses)
+    Attempt to match each raw label to a standard label based on meaning, not just exact text match
+    If a raw label doesn't clearly match any standard label, preserve it with a generic prefix based on its category
+    If multiple raw positions map to the same standard position, sum their values
+    DO NOT include any total or subtotal positions - we will calculate these programmatically
+    Return the output in a standard JSON format, excluding all values that are null
+    STANDARD BALANCE SHEET POSITIONS:
+    Assets (prefix: a_):
+    a_cash_and_equivalents # Cash, Cash and Cash Equivalents, etc.
+    a_short_term_investments # Marketable Securities, Short-term Investments, etc.
+    a_accounts_receivable # Accounts Receivable, Trade Receivables, etc.
+    a_inventory # Inventory, Merchandise, etc.
+    a_prepaid_expenses # Prepaid Expenses, Prepayments, etc.
+    a_other_current_assets # Other Current Assets, etc.
+    a_ppe_gross # Property Plant and Equipment, Fixed Assets, etc. (gross)
+    a_accumulated_depreciation # Accumulated Depreciation, etc.
+    a_ppe_net # Property Plant and Equipment, Fixed Assets, etc. (net)
+    a_intangible_assets # Intangible Assets, Patents, Trademarks, etc.
+    a_goodwill # Goodwill
+    a_long_term_investments # Long-term Investments, etc.
+    a_deferred_tax # Deferred Tax Assets, etc.
+    a_other_non_current # Other Non-current Assets, etc.
+    Liabilities (prefix: l_):
+    l_accounts_payable # Accounts Payable, Trade Payables, etc.
+    l_short_term_debt # Short-term Debt, Short-term Loans, etc.
+    l_current_portion_lt_debt # Current Portion of Long-term Debt, etc.
+    l_accrued_expenses # Accrued Expenses, Accrued Liabilities, etc.
+    l_deferred_revenue # Deferred Revenue, Unearned Revenue, etc.
+    l_income_tax_payable # Income Tax Payable, Tax Liabilities, etc.
+    l_other_current # Other Current Liabilities, etc.
+    l_long_term_debt # Long-term Debt, Long-term Loans, etc.
+    l_deferred_tax # Deferred Tax Liabilities, etc.
+    l_pension_obligations # Pension Obligations, Retirement Benefits, etc.
+    l_other_non_current # Other Non-current Liabilities, etc.
+    Equity (prefix: e_):
+    e_common_stock # Common Stock, Share Capital, etc.
+    e_preferred_stock # Preferred Stock, Preference Shares, etc.
+    e_additional_paid_capital # Additional Paid-in Capital, Share Premium, etc.
+    e_treasury_stock # Treasury Stock, Treasury Shares, etc.
+    e_retained_earnings # Retained Earnings, Accumulated Profits, etc.
+    e_accumulated_oci # Accumulated Other Comprehensive Income, etc.
+    e_non_controlling_interest # Non-controlling Interest, Minority Interest, etc.
+    CATEGORY MATCHING GUIDANCE:
+    For items that appear to be assets but don't match a standard asset position, use prefix "a_other_"
+    For items that appear to be liabilities but don't match a standard liability position, use prefix "l_other_"
+    For items that appear to be equity but don't match a standard equity position, use prefix "e_other_"
+    Ignore any total or subtotal values - these will be calculated programmatically
+    REQUIRED OUTPUT FORMAT:
+    {
+    "standard_column_name": {
+      "current": <number or null>,
+      "previous": <number or null>
+    },
+    ...additional positions...
+    }
+    """
+    raw_data_str = json.dumps(raw_data, indent=2)
+    response = await client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are a financial data standardization expert who ensures data consistency. You carefully map financial labels to standard formats and combine related positions."
+            },
+            {
+                "role": "user",
+                "content": standardization_prompt + "\n\nRaw financial data:\n" + raw_data_str
+            }
+        ],
+        response_format={"type": "json_object"},
+        temperature=0.1
+    )
+    try:
+        result = json.loads(response.choices[0].message.content)
+        logger.info(f"Standardized financial data: {result}")
         
-        return result_json
-    except Exception as e:
-        raise HTTPException(status_code=422, detail=f"Error parsing OpenAI response: {str(e)}")
+        for position, values in result.items():
+            if "current" in values and values["current"] == "":
+                values["current"] = None
+            if "previous" in values and values["previous"] == "":
+                values["previous"] = None
+        
+        return result
+    except json.JSONDecodeError:
+        logger.error("Failed to decode JSON response from OpenAI during standardization step")
+        raise HTTPException(status_code=500, detail="Failed to standardize financial data")
+
+async def process_financial_data(sheet_data: List[List[Any]]) -> Dict[str, Any]:
+    raw_data = await extract_raw_financial_data(sheet_data)
+    standardized_data = await standardize_financial_data(raw_data)
+    return standardized_data

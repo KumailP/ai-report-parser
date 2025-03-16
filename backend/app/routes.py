@@ -1,7 +1,7 @@
 import json
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from app.services.excel_service import process_excel_file
-from app.services.openai_service import extract_adaptive_financial_data
+from app.services.openai_service import process_financial_data
 from app.models import GeneratedReport, GeneratedReportResponse
 from app.logging import logger
 from app.database import SessionDep
@@ -15,7 +15,7 @@ async def process_report(session: SessionDep, report: UploadFile = File(...)) ->
 
     try:
         raw_report = await process_excel_file(report)
-        financial_data = await extract_adaptive_financial_data(raw_report)
+        financial_data = await process_financial_data(raw_report)
         res = GeneratedReport(data=json.dumps(financial_data))
         logger.info(f"Generated report: {res}")
         
