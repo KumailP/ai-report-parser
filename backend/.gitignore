@@ -1,5 +1,6 @@
 .env
 .venv/*
 .vscode/*
-__pycache__/*
 example_files
+/app/__pycache__/*
+/app/*/__pycache__/*
