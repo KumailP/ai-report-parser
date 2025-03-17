@@ -105,7 +105,3 @@ The application is containerized for easy deployment:
 - `docker-compose.yml` sets up the API service
 - The backend Dockerfile builds a Python environment with all dependencies
 - Volumes are configured for development convenience
-
-## License
-
-[Your License Here]

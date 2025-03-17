@@ -1,5 +1,24 @@
 # Financial Report Structuring Backend
 
+## Table of Contents
+- [Architecture](#architecture)
+- [Key Components](#key-components)
+  - [Data Models](#data-models)
+  - [API Endpoints](#api-endpoints)
+  - [Services](#services)
+- [Database Schema](#database-schema)
+- [Environment Variables](#environment-variables)
+- [Development Setup](#development-setup)
+  - [Local Development](#local-development)
+  - [Docker Development](#docker-development)
+- [API Documentation](#api-documentation)
+- [Implementation Details](#implementation-details)
+  - [OpenAI Integration](#openai-integration)
+  - [Data Flow](#data-flow)
+- [Implementation Considerations](#implementation-considerations)
+- [Assumptions](#assumptions)
+- [Limitations / Improvements](#limitations--improvements)
+
 This directory contains the FastAPI backend service for the Financial Report Structuring microservice.
 
 ## Architecture
@@ -14,11 +33,11 @@ backend/
 │   ├── routes.py             # API endpoints
 │   ├── models.py             # Data models (SQLModel & Pydantic)
 │   ├── database.py           # Database connection and session
-│   ├── logging.py            # Logging configuration
+│   ├── logger.py             # Logging configuration
+│   ├── constants.py          # Constants
 │   └── services/             # Service modules
 │       ├── excel_service.py  # Excel file processing
 │       └── openai_service.py # OpenAI integration
-├── example_files/            # Sample financial reports
 ├── sqlite/                   # SQLite database files
 ├── requirements.txt          # Python dependencies
 ├── Dockerfile                # Container definition
@@ -33,8 +52,8 @@ backend/
 The application uses SQLModel to define both ORM models and API schemas:
 
 - **Report**: Represents a processed financial report with metadata
+- **PositionType**: Represents standardized financial position types with codes and categories
 - **ReportPosition**: Represents a specific financial position with current/previous values
-- **STANDARD_POSITIONS**: Dictionary defining standardized financial position codes and descriptions
 
 ### API Endpoints
 
@@ -62,15 +81,21 @@ The `openai_service.py` module provides:
 
 The application uses SQLite with SQLModel ORM:
 
+- **position_types**: Stores standardized financial position definitions
+  - id (PK)
+  - code (string, indexed, unique)
+  - description (string)
+  - category (enum: asset, liability, equity)
+
 - **reports**: Stores metadata about processed reports
   - id (PK)
-  - processed_at (timestamp)
-  - file_name (string)
+  - processed_at (timestamp, indexed)
+  - file_name (string, indexed)
 
-- **report_positions**: Stores standardized financial positions
+- **report_positions**: Stores financial position values for reports
   - id (PK)
-  - report_id (FK to reports)
-  - code (string)
+  - position_type_id (FK to position_types, indexed)
+  - report_id (FK to reports, indexed)
   - current (float, nullable)
   - previous (float, nullable)
 
@@ -151,9 +176,49 @@ The service implements robust error handling with exponential backoff retry logi
 4. Data is stored in the database
 5. Processed report is returned to the client
 
-## Performance Considerations
+## Implementation Considerations
 
-- The service implements proper exception handling and logging
+#### 1. General
+- The service implements exception handling and logging
+#### 2. Data extraction / transformation / validation
+- Transformations are kept to a minimum as we need to pass empty spaces / rows to the model as well to ensure it understands where the data falls within a spreadsheet
+- openpyxl is used in favor of pandas as we only need basic excel loading / parsing
+#### 3. LLM usage
+- Initially I tried using a two-pass approach:
+   1. The first prompt identifies the positions
+   2. The second prompt structures the data
+- This was changed to use a single pass approach because of the following:
+   - Results were comparable, although the two pass approach may be better for accuracy depending on the dataset
+   - Reduced token usage / billing / quota limits
+   - Reduced latency
+- The prompt can be summarized, right now it's quite detailed which may increase the input tokens
+- The standard positions are injected in the prompt
+- The LLM is forbidden from creating custom financial positions
+- The LLM returns 'excluded_positions', this is useful to check the accuracy and understand the model's thinking process i.e. why it rejected certain positions
+- We may consider using a network request instead of using the OpenAI SDK, this would be helpful if we want to extend support for multiple LLM models
+- We may consider using the completions.parse API instead of compeltions.create API, although our curent implementation returns a structured JSON. I need to look further at the OpenAI API documentation to better understand the differences.
+#### 4. Database Modelling
+- We have DB level validation to ensure the data structure is correct
 - Database queries use indexes on frequently queried fields
-- The OpenAI client uses retry logic with exponential backoff
-- Excel processing extracts only necessary data 
+- The OpenAI client uses retry logic with exponential backoff - If our application was in a production system with users, we would implement application-level rate limiting so we don't go bankrupt
+- Initially the standardized positions were a constant. For demo purposes, this is good enough because:
+   1. We don't need to query the DB for constants, hence it is performant
+   2. We have an assumption that the standard positions will not change frequently
+- The above was since changed and now we have normalized the standard positions `position_types`. This means:
+   1. We need to query the DB to construct the prompt and verify the data
+   2. We get rid of raw strings in our report_positions table and instead have a reference to position_types
+   3. We can extend position types with more information (description, category, etc.)
+   4. We can add more positions without having to modify the code (Although we will need a migration script)
+   5. 'category' could be normalized as well, however having it defined as an Enum should be fine for now
+
+## Assumptions
+
+1. "Current" is whatever the latest year in the spreadsheet, with the "Previous" year being the one that comes before. This is a big assumption only made for test purposes, in reality we would label the year (or period) for which the financial data is related to.
+2. Balance sheet positions are "standard" and fall within our predefined categories and position names. The model will be flexible enough to identify which labels fall into our given standard, but it will disregard labels that it determines to be 'far off' from our given specification. This can be changed without modifying code by adding more standard positions in the database, but I have made this assumption so we have some structure for querying report data, as well as ensure a better response from LLM as balance sheet positions are fairly standard.
+3. If a balance sheet position in the spreadsheet has multiple values that fall into one of our given standardized position values, then the model uses the one it considers the most relevant. We might want to manually, or through another prompt, look at the 'rejected' values given by the prompt to avoid loss of data in our final report.
+
+## Limitations / Improvements
+
+1. Only the first sheet of the Excel file is processed
+2. There is no pagination support for retrieval of reports
+3. Unit Tests should be added to ensure each module / service works as expected.
