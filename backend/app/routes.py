@@ -4,6 +4,8 @@ from app.services.openai_service import process_financial_data
 from app.logging import logger
 from app.database import SessionDep
 from app.models import Report, ReportPosition, ReportPublic
+from sqlmodel import select
+from sqlalchemy.orm import selectinload
 
 router = APIRouter(prefix="/api", tags=["Financial Data"])
 
@@ -47,7 +49,12 @@ def get_report(
     report_id: int, 
     session: SessionDep,
 ):
-    report = session.get(Report, report_id)
+    statement = select(Report).where(Report.id == report_id).options(
+        selectinload(Report.positions)
+    )
+    results = session.exec(statement)
+    report = results.first()
+    
     if not report:
         logger.warning(f"Report {report_id} not found")
         raise HTTPException(status_code=404, detail="Report not found")
