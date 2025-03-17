@@ -1,4 +1,4 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Path
 from app.services.excel_service import process_excel_file
 from app.services.openai_service import process_financial_data
 from app.logging import logger
@@ -14,11 +14,25 @@ router = APIRouter(prefix="/api", tags=["Financial Data"])
 @router.post(
     "/report",
     response_model=ReportPublic,
+    summary="Process Financial Report",
     description="""
         Accept a financial report file, process it with OpenAI, and save the result to the database.
         Returns the processed report as a ReportPublic object.
-    """)
-async def process_report(session: SessionDep, report: UploadFile = File(...)):
+    """,
+    status_code=201,
+    responses={
+        201: {"description": "Report created successfully"},
+        400: {"description": "Invalid file format"},
+        500: {"description": "Processing error"}
+    }
+)
+async def process_report(
+    session: SessionDep, 
+    report: UploadFile = File(
+        ...,
+        description="Excel file containing financial report data. Supported formats: .xlsx, .xls",
+    )
+):
     try:
         logger.info(f"Starting to process report file: {report.filename}")
         
@@ -58,22 +72,71 @@ async def process_report(session: SessionDep, report: UploadFile = File(...)):
 @router.get(
     "/report",
     response_model=List[ReportPublic],
+    summary="Retrieve Financial Reports",
     description="""
         Retrieve report(s) by ID or filter by parameters.
         If report_id is provided, returns that specific report.
         Otherwise, returns reports matching the filter criteria.
-    """)
+    """,
+    responses={
+        200: {
+            "description": "Reports retrieved successfully",
+            "content": {
+                "application/json": {
+                    "example": [{
+                        "id": 1,
+                        "processed_at": "2025-03-17T10:30:00",
+                        "data": {
+                            "intangible_assets": {"current": 10000.0, "previous": 8500.0},
+                            "accounts_receivable": {"current": 5000.0, "previous": 4800.0}
+                        }
+                    }]
+                }
+            }
+        },
+        400: {"description": "Missing required parameters"},
+        404: {"description": "Report not found"}
+    }
+)
 def get_report(
     session: SessionDep,
-    report_id: Optional[int] = None,
-    file_name: Optional[str] = None,
-    start_date: Optional[datetime] = None,
-    end_date: Optional[datetime] = None,
-    position_code: Optional[str] = None,
-    min_current_value: Optional[float] = None,
-    max_current_value: Optional[float] = None,
-    min_previous_value: Optional[float] = None,
-    max_previous_value: Optional[float] = None
+    report_id: Optional[int] = Query(
+        None, 
+        description="Unique identifier for a specific report",
+        example=1
+    ),
+    file_name: Optional[str] = Query(
+        None, 
+        description="Name of the uploaded file"
+    ),
+    start_date: Optional[datetime] = Query(
+        None, 
+        description="Filter reports processed after this date (ISO 8601 format: YYYY-MM-DDTHH:MM:SS)",
+    ),
+    end_date: Optional[datetime] = Query(
+        None, 
+        description="Filter reports processed before this date (ISO 8601 format: YYYY-MM-DDTHH:MM:SS)",
+    ),
+    position_code: Optional[str] = Query(
+        None, 
+        description="Filter by specific financial position code. Financial codes are standardized and follow snake_case naming convention."
+    ),
+    min_current_value: Optional[float] = Query(
+        None, 
+        description="Minimum value for current period"
+    ),
+    max_current_value: Optional[float] = Query(
+        None, 
+        description="Maximum value for current period"
+    ),
+    min_previous_value: Optional[float] = Query(
+        None, 
+        description="Minimum value for previous period"
+    ),
+    max_previous_value: Optional[float] = Query(
+        None, 
+        description="Maximum value for previous period"
+    )
 ):
     if report_id is None and position_code is None and file_name is None:
         logger.warning("Request missing required parameters: either report_id, file_name, or position_code must be provided")
