@@ -11,3 +11,4 @@ env/
 venv/
 .env
 *.log 
+example_files/
