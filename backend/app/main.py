@@ -1,11 +1,9 @@
-import os
 from dotenv import load_dotenv
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI
 from contextlib import asynccontextmanager
 
-from app.database import SessionDep, create_db_and_tables
-from app.models import GeneratedReport
+from app.database import create_db_and_tables
 from app.routes import router
 
 load_dotenv()
