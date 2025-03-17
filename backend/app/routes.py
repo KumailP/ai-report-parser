@@ -1,7 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, HTTPException, Query, Path
 from app.services.excel_service import process_excel_file
 from app.services.openai_service import process_financial_data
-from app.logging import logger
+from app.logger import logger
 from app.database import SessionDep
 from app.models import Report, ReportPosition, ReportPublic
 from sqlmodel import select
@@ -39,20 +39,12 @@ async def process_report(
         pre_processed_data = await process_excel_file(report)
         logger.info("Excel file processed successfully, starting financial data extraction")
         
-        financial_data = await process_financial_data(pre_processed_data)
+        processed_positions = await process_financial_data(pre_processed_data, session)
         logger.info("Financial data processed and standardized successfully")
         
-        positions = [
-            ReportPosition(
-                code=code,
-                current=data.current,
-                previous=data.previous
-            )
-            for code, data in financial_data.items()
-        ]
         db_report = Report(
             file_name=report.filename,
-            positions=positions
+            positions=processed_positions
         )
         
         logger.info(f"Inserting report to DB with {len(db_report.positions)} positions")

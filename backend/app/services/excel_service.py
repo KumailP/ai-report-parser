@@ -1,5 +1,5 @@
 import io
-from app.logging import logger
+from app.logger import logger
 from openpyxl import load_workbook
 from fastapi import HTTPException
 
