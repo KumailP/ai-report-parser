@@ -72,6 +72,7 @@ class Report(SQLModel, table=True):
     __tablename__ = "reports"
     id: Optional[int] = Field(default=None, primary_key=True)
     processed_at: datetime = Field(default_factory=datetime.now, index=True)
+    file_name: str = Field(index=True)
     positions: List[ReportPosition] = Relationship(back_populates="report")
 
 class ReportPublic(BaseModel):

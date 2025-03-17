@@ -36,7 +36,10 @@ async def process_report(session: SessionDep, report: UploadFile = File(...)):
             )
             for code, data in financial_data.items()
         ]
-        db_report = Report(positions=positions)
+        db_report = Report(
+            file_name=report.filename,
+            positions=positions
+        )
         
         logger.info(f"Inserting report to DB with {len(db_report.positions)} positions")
         
@@ -63,6 +66,7 @@ async def process_report(session: SessionDep, report: UploadFile = File(...)):
 def get_report(
     session: SessionDep,
     report_id: Optional[int] = None,
+    file_name: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     position_code: Optional[str] = None,
@@ -71,11 +75,11 @@ def get_report(
     min_previous_value: Optional[float] = None,
     max_previous_value: Optional[float] = None
 ):
-    if report_id is None and position_code is None:
-        logger.warning("Request missing required parameters: either report_id or position_code must be provided")
+    if report_id is None and position_code is None and file_name is None:
+        logger.warning("Request missing required parameters: either report_id, file_name, or position_code must be provided")
         raise HTTPException(
             status_code=400, 
-            detail="Either report_id or position_code must be provided"
+            detail="Either report_id, file_name, or position_code must be provided"
         )
     
     query = select(Report).options(selectinload(Report.positions))
@@ -86,6 +90,9 @@ def get_report(
             logger.warning(f"Report {report_id} not found")
             raise HTTPException(status_code=404, detail="Report not found")
         return [ReportPublic.from_report(report)]
+    
+    if file_name is not None:
+        query = query.where(Report.file_name == file_name)
     
     if start_date:
         query = query.where(Report.processed_at >= start_date)
