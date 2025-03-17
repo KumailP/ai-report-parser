@@ -18,6 +18,7 @@
 - [Implementation Considerations](#implementation-considerations)
 - [Assumptions](#assumptions)
 - [Limitations / Improvements](#limitations--improvements)
+- [AI Usage](#ai-usage)
 
 This directory contains the FastAPI backend service for the Financial Report Structuring microservice.
 
@@ -194,7 +195,7 @@ The service implements robust error handling with exponential backoff retry logi
 - The prompt can be summarized, right now it's quite detailed which may increase the input tokens
 - The standard positions are injected in the prompt
 - The LLM is forbidden from creating custom financial positions
-- The LLM returns 'excluded_positions', this is useful to check the accuracy and understand the model's thinking process i.e. why it rejected certain positions
+- The LLM returns 'excluded_positions', this is useful to check the accuracy and understand the model's thinking process i.e. why it rejected certain positions. They are not currently persisted in the DB.
 - We may consider using a network request instead of using the OpenAI SDK, this would be helpful if we want to extend support for multiple LLM models
 - We may consider using the completions.parse API instead of compeltions.create API, although our curent implementation returns a structured JSON. I need to look further at the OpenAI API documentation to better understand the differences.
 #### 4. Database Modelling
@@ -222,3 +223,25 @@ The service implements robust error handling with exponential backoff retry logi
 1. Only the first sheet of the Excel file is processed
 2. There is no pagination support for retrieval of reports
 3. Unit Tests should be added to ensure each module / service works as expected.
+
+## AI Usage
+
+The following tools were used during development:
+   1. **Cursor IDE (claude-3.7-sonnet):**
+      - Simple data structure manipulation
+      - Lookup certain Python / FastAPI documentation
+      - Fix / improve syntax (Make code more 'Pythonic')
+   2. **Cursor IDE (claude-3.7-sonnet-thinking):**
+      - Prompt Engineering
+      - Documentation & comments
+      - Code review
+      - Discussing improvements & alternate approaches
+
+Challenges encountered:
+   1. AI referenced outdated documentation.
+   2. AI sometimes did not understand the context correctly.
+   3. AI suggested approaches that were not ideal for our use case.
+   4. In case of syntax / code changes, AI overly complicated things which were not necessary at all.
+
+In summary, AI was used to aid in development, more so in fixing simple Python / SQLModel / Pydantic / FastAPI syntax issues, and also for reasoning to get feedback on the approach that I wanted to implement.
+AI was not relied on solely for development & was used to enhance the reasoning & implementation process and also to improve development speed.

@@ -32,7 +32,7 @@ def init_position_types(session: Session):
     logger.info(f"Added {sum(len(positions) for positions in STANDARD_POSITIONS_TO_INITIALIZE.values())} position types")
 
 def create_db_and_tables():
-    """Create database tables and initialize standard data."""
+    """Create database tables and initialize standard positions."""
     logger.info("Creating database and tables")
     SQLModel.metadata.create_all(engine)
     
