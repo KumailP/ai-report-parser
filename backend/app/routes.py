@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 from typing import List, Optional
 from datetime import datetime
 
+# Create API router with prefix and tag for swagger docs
 router = APIRouter(prefix="/api", tags=["Financial Data"])
 
 @router.post(
@@ -33,15 +34,24 @@ async def process_report(
         description="Excel file containing financial report data. Supported formats: .xlsx, .xls",
     )
 ):
+    """
+    Process uploaded financial reports through a multi-step pipeline:
+    1. Extract data from Excel file
+    2. Process with OpenAI to standardize financial positions
+    3. Save to database
+    """
     try:
         logger.info(f"Starting to process report file: {report.filename}")
         
+        # Step 1: Extract raw data from Excel file
         pre_processed_data = await process_excel_file(report)
         logger.info("Excel file processed successfully, starting financial data extraction")
         
+        # Step 2: Process data with OpenAI to extract and standardize financial positions
         processed_positions = await process_financial_data(pre_processed_data, session)
         logger.info("Financial data processed and standardized successfully")
         
+        # Step 3: Create report record with processed positions
         db_report = Report(
             file_name=report.filename,
             positions=processed_positions
@@ -49,12 +59,14 @@ async def process_report(
         
         logger.info(f"Inserting report to DB with {len(db_report.positions)} positions")
         
+        # Save to database and get the generated ID
         session.add(db_report)
         session.commit()
         session.refresh(db_report)
         
         logger.info(f"Report created successfully with ID: {db_report.id}")
         
+        # Convert DB model to API response format
         return ReportPublic.from_report(db_report)
 
     except Exception as e:
@@ -130,6 +142,11 @@ def get_report(
         description="Maximum value for previous period"
     )
 ):
+    """
+    Retrieve financial reports with flexible filtering options.
+    Supports lookup by ID, filename, date range, and financial position values.
+    """
+    # Validate that at least one required parameter is provided
     if report_id is None and position_code is None and file_name is None:
         logger.warning("Request missing required parameters: either report_id, file_name, or position_code must be provided")
         raise HTTPException(
@@ -137,8 +154,10 @@ def get_report(
             detail="Either report_id, file_name, or position_code must be provided"
         )
     
+    # Base query with eager loading of positions to avoid N+1 queries
     query = select(Report).options(selectinload(Report.positions))
     
+    # Fast path for direct ID lookup
     if report_id is not None:
         report = session.exec(query.where(Report.id == report_id)).first()
         if not report:
@@ -146,6 +165,7 @@ def get_report(
             raise HTTPException(status_code=404, detail="Report not found")
         return [ReportPublic.from_report(report)]
     
+    # Apply filters based on provided parameters
     if file_name is not None:
         query = query.where(Report.file_name == file_name)
     
@@ -154,6 +174,7 @@ def get_report(
     if end_date:
         query = query.where(Report.processed_at <= end_date)
     
+    # Track if any value filters are applied for logging
     has_value_filters = any([
         min_current_value is not None,
         max_current_value is not None,
@@ -161,6 +182,7 @@ def get_report(
         max_previous_value is not None
     ])
     
+    # Add position-specific filters if provided
     query = query.join(ReportPosition)
     query = query.where(ReportPosition.code == position_code)
     
@@ -173,8 +195,10 @@ def get_report(
     if max_previous_value is not None:
         query = query.where(ReportPosition.previous <= max_previous_value)
     
+    # Avoid duplicate reports when joining with positions
     query = query.distinct()
     
+    # Execute query and return formatted results
     reports = session.exec(query).all()
     
     if not reports:
