@@ -6,10 +6,18 @@ from app.database import SessionDep
 from app.models import Report, ReportPosition, ReportPublic
 from sqlmodel import select
 from sqlalchemy.orm import selectinload
+from typing import List, Optional
+from datetime import datetime
 
 router = APIRouter(prefix="/api", tags=["Financial Data"])
 
-@router.post("/report", response_model=ReportPublic)
+@router.post(
+    "/report",
+    response_model=ReportPublic,
+    description="""
+        Accept a financial report file, process it with OpenAI, and save the result to the database.
+        Returns the processed report as a ReportPublic object.
+    """)
 async def process_report(session: SessionDep, report: UploadFile = File(...)):
     try:
         logger.info(f"Starting to process report file: {report.filename}")
@@ -44,19 +52,75 @@ async def process_report(session: SessionDep, report: UploadFile = File(...)):
         logger.error(f"Error processing file {report.filename}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/report/{report_id}", response_model=ReportPublic)
+@router.get(
+    "/report",
+    response_model=List[ReportPublic],
+    description="""
+        Retrieve report(s) by ID or filter by parameters.
+        If report_id is provided, returns that specific report.
+        Otherwise, returns reports matching the filter criteria.
+    """)
 def get_report(
-    report_id: int, 
     session: SessionDep,
+    report_id: Optional[int] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    position_code: Optional[str] = None,
+    min_current_value: Optional[float] = None,
+    max_current_value: Optional[float] = None,
+    min_previous_value: Optional[float] = None,
+    max_previous_value: Optional[float] = None
 ):
-    statement = select(Report).where(Report.id == report_id).options(
-        selectinload(Report.positions)
-    )
-    results = session.exec(statement)
-    report = results.first()
+    if report_id is None and position_code is None:
+        logger.warning("Request missing required parameters: either report_id or position_code must be provided")
+        raise HTTPException(
+            status_code=400, 
+            detail="Either report_id or position_code must be provided"
+        )
     
-    if not report:
-        logger.warning(f"Report {report_id} not found")
-        raise HTTPException(status_code=404, detail="Report not found")
+    query = select(Report).options(selectinload(Report.positions))
     
-    return ReportPublic.from_report(report)
+    if report_id is not None:
+        report = session.exec(query.where(Report.id == report_id)).first()
+        if not report:
+            logger.warning(f"Report {report_id} not found")
+            raise HTTPException(status_code=404, detail="Report not found")
+        return [ReportPublic.from_report(report)]
+    
+    if start_date:
+        query = query.where(Report.processed_at >= start_date)
+    if end_date:
+        query = query.where(Report.processed_at <= end_date)
+    
+    has_value_filters = any([
+        min_current_value is not None,
+        max_current_value is not None,
+        min_previous_value is not None,
+        max_previous_value is not None
+    ])
+    
+    query = query.join(ReportPosition)
+    query = query.where(ReportPosition.code == position_code)
+    
+    if min_current_value is not None:
+        query = query.where(ReportPosition.current >= min_current_value)
+    if max_current_value is not None:
+        query = query.where(ReportPosition.current <= max_current_value)
+    if min_previous_value is not None:
+        query = query.where(ReportPosition.previous >= min_previous_value)
+    if max_previous_value is not None:
+        query = query.where(ReportPosition.previous <= max_previous_value)
+    
+    query = query.distinct()
+    
+    reports = session.exec(query).all()
+    
+    if not reports:
+        filter_desc = " with position_code filter"
+        if has_value_filters or start_date or end_date:
+            filter_desc += " and additional filters"
+        logger.info(f"No reports found{filter_desc}")
+    else:
+        logger.info(f"Found {len(reports)} reports")
+    
+    return [ReportPublic.from_report(report) for report in reports]
